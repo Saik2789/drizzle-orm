@@ -2,6 +2,7 @@ import type { Database, RunResult, Statement } from 'better-sqlite3';
 import { type Cache, NoopCache } from '~/cache/core/index.ts';
 import type { WithCacheConfig } from '~/cache/core/types.ts';
 import { entityKind } from '~/entity.ts';
+import { DrizzleQueryError } from '~/errors.ts';
 import type { Logger } from '~/logger.ts';
 import { NoopLogger } from '~/logger.ts';
 import type { RelationalSchemaConfig, TablesRelationalConfig } from '~/relations.ts';
@@ -57,19 +58,23 @@ export class BetterSQLiteSession<
 		},
 		cacheConfig?: WithCacheConfig,
 	): PreparedQuery<T> {
-		const stmt = this.client.prepare(query.sql);
-		return new PreparedQuery(
-			stmt,
-			query,
-			this.logger,
-			this.cache,
-			queryMetadata,
-			cacheConfig,
-			fields,
-			executeMethod,
-			isResponseInArrayMode,
-			customResultMapper,
-		);
+		try {
+			const stmt = this.client.prepare(query.sql);
+			return new PreparedQuery(
+				stmt,
+				query,
+				this.logger,
+				this.cache,
+				queryMetadata,
+				cacheConfig,
+				fields,
+				executeMethod,
+				isResponseInArrayMode,
+				customResultMapper,
+			);
+		} catch (e) {
+			throw new DrizzleQueryError(query.sql, query.params, e as Error);
+		}
 	}
 
 	override transaction<T>(
@@ -129,7 +134,11 @@ export class PreparedQuery<T extends PreparedQueryConfig = PreparedQueryConfig> 
 	run(placeholderValues?: Record<string, unknown>): RunResult {
 		const params = fillPlaceholders(this.query.params, placeholderValues ?? {});
 		this.logger.logQuery(this.query.sql, params);
-		return this.stmt.run(...params);
+		try {
+			return this.stmt.run(...params);
+		} catch (e) {
+			throw new DrizzleQueryError(this.query.sql, params, e as Error);
+		}
 	}
 
 	all(placeholderValues?: Record<string, unknown>): T['all'] {
@@ -137,7 +146,11 @@ export class PreparedQuery<T extends PreparedQueryConfig = PreparedQueryConfig> 
 		if (!fields && !customResultMapper) {
 			const params = fillPlaceholders(query.params, placeholderValues ?? {});
 			logger.logQuery(query.sql, params);
-			return stmt.all(...params);
+			try {
+				return stmt.all(...params);
+			} catch (e) {
+				throw new DrizzleQueryError(query.sql, params, e as Error);
+			}
 		}
 
 		const rows = this.values(placeholderValues) as unknown[][];
@@ -153,10 +166,19 @@ export class PreparedQuery<T extends PreparedQueryConfig = PreparedQueryConfig> 
 
 		const { fields, stmt, joinsNotNullableMap, customResultMapper } = this;
 		if (!fields && !customResultMapper) {
-			return stmt.get(...params);
+			try {
+				return stmt.get(...params);
+			} catch (e) {
+				throw new DrizzleQueryError(this.query.sql, params, e as Error);
+			}
 		}
 
-		const row = stmt.raw().get(...params) as unknown[];
+		let row: unknown[];
+		try {
+			row = stmt.raw().get(...params) as unknown[];
+		} catch (e) {
+			throw new DrizzleQueryError(this.query.sql, params, e as Error);
+		}
 
 		if (!row) {
 			return undefined;
@@ -168,11 +190,14 @@ export class PreparedQuery<T extends PreparedQueryConfig = PreparedQueryConfig> 
 
 		return mapResultRow(fields!, row, joinsNotNullableMap);
 	}
-
 	values(placeholderValues?: Record<string, unknown>): T['values'] {
 		const params = fillPlaceholders(this.query.params, placeholderValues ?? {});
 		this.logger.logQuery(this.query.sql, params);
-		return this.stmt.raw().all(...params) as T['values'];
+		try {
+			return this.stmt.raw().all(...params) as T['values'];
+		} catch (e) {
+			throw new DrizzleQueryError(this.query.sql, params, e as Error);
+		}
 	}
 
 	/** @internal */
